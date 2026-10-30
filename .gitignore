@@ -1,0 +1,11 @@
+dist/
+*.exe
+*.pdb
+*.zip
+.env*
+work/
+reference/
+tests/*.png
+tests/*results*
+.vs/
+!downloads/*.exe

@@ -1,4 +1,4 @@
-# 大肥鱼桌宠
+﻿# 大肥鱼桌宠
 
 ![大肥鱼桌宠](assets/app-icon-preview.png)
 
