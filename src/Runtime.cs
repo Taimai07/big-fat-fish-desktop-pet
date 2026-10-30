@@ -12,8 +12,8 @@ using System.Windows.Forms;
 
 [assembly: AssemblyTitle("大肥鱼桌宠")]
 [assembly: AssemblyProduct("大肥鱼桌宠")]
-[assembly: AssemblyVersion("0.7.0.0")]
-[assembly: AssemblyFileVersion("0.7.0.0")]
+[assembly: AssemblyVersion("0.7.1.0")]
+[assembly: AssemblyFileVersion("0.7.1.0")]
 
 namespace DesktopInteraction
 {
@@ -117,13 +117,12 @@ namespace DesktopInteraction
     public sealed class LiveSource : IFrameSource,IDisposable
     {
         private int used;
-        private readonly Action<bool> collectionVisibility;
         private object shell;
         private bool minimized;
         private readonly IDesktopGeometry geometry;
-        public LiveSource(Action<bool> collectionVisibility,IDesktopGeometry geometry=null)
+        public LiveSource(IDesktopGeometry geometry=null)
         {
-            this.collectionVisibility=collectionVisibility;this.geometry=geometry??new DesktopGeometry();
+            this.geometry=geometry??new DesktopGeometry();
         }
         public async Task<List<Frame>> CaptureOnceAsync(CancellationToken token)
         {
@@ -143,7 +142,6 @@ namespace DesktopInteraction
             var frames=new List<Frame>();
             try
             {
-                collectionVisibility(false);
                 shell=Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid("13709620-C279-11CE-A49E-444553540000"),true));
                 // Documented Shell methods only. No simulated keystrokes or window enumeration.
                 shell.GetType().InvokeMember("MinimizeAll",BindingFlags.InvokeMethod,null,shell,null);
@@ -151,9 +149,7 @@ namespace DesktopInteraction
                 await Task.Delay(650,token);
                 token.ThrowIfCancellationRequested();
                 if(!bounds.SequenceEqual(Screen.AllScreens.Select(s=>s.Bounds))) throw new InvalidOperationException("Displays changed");
-                // Keep a cancellable, ordinary preparation window visible during the UI query.
-                // Hide it only for the short one-frame screenshot interval.
-                collectionVisibility(true);
+                // The bounded UI query runs without displaying a preparation window.
                 var layoutTask=Task.Run(()=>geometry.ReadOnce(token),token);
                 if(await Task.WhenAny(layoutTask,Task.Delay(4000,token))!=layoutTask)
                 {
@@ -174,7 +170,6 @@ namespace DesktopInteraction
                     if(owner<0)throw new DesktopLayoutUnavailableException();
                     owners[owner].Add(slot);
                 }
-                collectionVisibility(false);
                 await Task.Delay(100,token);
                 if(!bounds.SequenceEqual(Screen.AllScreens.Select(s=>s.Bounds)))throw new DesktopLayoutUnavailableException();
                 await Task.Run(()=>
@@ -195,10 +190,6 @@ namespace DesktopInteraction
                 return frames;
             }
             catch { foreach(var f in frames) f.Dispose();Dispose();throw; }
-            finally
-            {
-                collectionVisibility(true);
-            }
         }
         public void Dispose()
         {
@@ -226,24 +217,6 @@ namespace DesktopInteraction
             var allow=new Button { Text="允许并继续",DialogResult=DialogResult.OK,Location=new Point(326,202),Size=new Size(130,40) };
             Controls.AddRange(new Control[]{title,body,cancel,allow});
             CancelButton=cancel; ActiveControl=cancel;
-        }
-    }
-
-    public sealed class ProgressWindow : Form
-    {
-        public ProgressWindow(Action stop)
-        {
-            Text="大肥鱼桌宠";Icon=AppIdentity.Icon;Font=new Font("Microsoft YaHei UI",10);
-            ClientSize=new Size(400,135); StartPosition=FormStartPosition.CenterScreen;
-            FormBorderStyle=FormBorderStyle.FixedDialog; MaximizeBox=false;
-            Controls.Add(new Label { Text="正在准备本机画面…",AutoSize=true,Location=new Point(22,24) });
-            var close=new Button { Text="退出",Location=new Point(275,78),Size=new Size(100,34) };
-            close.Click+=(s,e)=>stop(); Controls.Add(close); CancelButton=close;
-            FormClosing+=(s,e)=>stop();
-        }
-        protected override void OnHandleCreated(EventArgs e)
-        {
-            base.OnHandleCreated(e);OwnWindowTransitions.Disable(Handle);
         }
     }
 
@@ -354,31 +327,26 @@ namespace DesktopInteraction
     public sealed class Preparation : ApplicationContext
     {
         private readonly CancellationTokenSource cancel=new CancellationTokenSource();
-        private readonly ProgressWindow progress;
-        private bool stopped,busy=true,disposed;
+        private readonly System.Windows.Forms.Timer startup=new System.Windows.Forms.Timer {Interval=1};
+        private bool stopped,disposed;
         public List<Frame> Result;
         public LiveSource Live {get;private set;}
         private readonly bool fullScreenMock;
-        public Preparation(bool simulation,Theme theme,bool fullScreenMock=false)
+        public Preparation(bool simulation,Theme theme,bool fullScreenMock=false,IFrameSource simulationSource=null)
         {
             this.fullScreenMock=fullScreenMock;
-            progress=new ProgressWindow(Stop);
-            progress.Shown+=async (s,e)=>await Run(simulation,theme);
-            progress.Show();
+            if(!simulation && simulationSource!=null)throw new ArgumentException("Mock source is only available in simulation");
+            // Start on the normal UI message loop, with no preparation form or taskbar entry.
+            startup.Tick+=async (s,e)=>{startup.Stop();await Run(simulation,theme,simulationSource);};
+            startup.Start();
         }
-        private void Stop()
-        {
-            if(stopped || disposed) return;
-            stopped=true; cancel.Cancel(); progress.Hide();
-            if(!busy) ExitThread();
-        }
-        private async Task Run(bool simulation,Theme theme)
+        private async Task Run(bool simulation,Theme theme,IFrameSource simulationSource)
         {
             try
             {
                 IFrameSource source;
-                if(simulation)source=fullScreenMock?(IFrameSource)new ScreenMockSource():new MockSource();
-                else {Live=new LiveSource(visible=>{ if(visible && !stopped) progress.Show(); else progress.Hide(); });source=Live;}
+                if(simulation)source=simulationSource??(fullScreenMock?(IFrameSource)new ScreenMockSource():new MockSource());
+                else {Live=new LiveSource();source=Live;}
                 // This context is created only after explicit consent, or for synthetic simulation.
                 Result=await Session.PrepareAsync(true,source,theme,cancel.Token);
                 if(stopped) { foreach(var f in Result) f.Dispose(); Result=null; }
@@ -392,13 +360,13 @@ namespace DesktopInteraction
             {
                 if(!stopped) MessageBox.Show("未能安全准备画面，程序将退出。没有保存或上传截图。","桌面互动模式",MessageBoxButtons.OK,MessageBoxIcon.Information);
             }
-            finally { busy=false; progress.Hide(); ExitThread(); }
+            finally { ExitThread(); }
         }
         protected override void Dispose(bool disposing)
         {
             if(disposing && !disposed)
             {
-                disposed=true; cancel.Cancel(); progress.Dispose(); cancel.Dispose();
+                disposed=true;stopped=true;startup.Stop();startup.Dispose();cancel.Cancel();cancel.Dispose();
             }
             base.Dispose(disposing);
         }

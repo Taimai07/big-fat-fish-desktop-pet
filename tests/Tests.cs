@@ -140,16 +140,34 @@ public static class Tests
             Check(form.ShowDialog()==(allow?DialogResult.OK:DialogResult.Cancel),"consent "+(allow?"allow":"deny")+" button result");
         }
     }
+    sealed class SlowMockSource : IFrameSource
+    {
+        public int BeforeThread,AfterThread;
+        public async Task<List<Frame>> CaptureOnceAsync(CancellationToken token)
+        {
+            BeforeThread=Thread.CurrentThread.ManagedThreadId;
+            await Task.Delay(160,token);
+            AfterThread=Thread.CurrentThread.ManagedThreadId;
+            return await new MockSource().CaptureOnceAsync(token);
+        }
+    }
     static void PreparationTest()
     {
+        var source=new SlowMockSource();int samples=0,visibleForms=0;
+        int uiThread=Thread.CurrentThread.ManagedThreadId;
         using(var theme=new Theme(null,null))
-        using(var preparing=new Preparation(true,theme))
+        using(var preparing=new Preparation(true,theme,false,source))
+        using(var observer=new System.Windows.Forms.Timer {Interval=10})
         {
+            observer.Tick+=(s,e)=>{samples++;visibleForms=Math.Max(visibleForms,Application.OpenForms.Count);};
+            observer.Start();
             Application.Run(preparing);
             Check(preparing.Result!=null && preparing.Result.Count==2,"simulation preparation context completes with two frames");
+            Check(samples>0 && visibleForms==0,"preparation displays no forms throughout delayed mock collection");
+            Check(source.BeforeThread==uiThread && source.AfterThread==uiThread,"invisible preparation preserves normal UI-thread async continuations");
             foreach(var f in preparing.Result) f.Dispose();
         }
-        Check(Application.OpenForms.Count==0,"simulation preparation window disposed");
+        Check(Application.OpenForms.Count==0,"preparation leaves no visible or resident forms");
     }
     static void RenderConsent(string output)
     {
