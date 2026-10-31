@@ -8,7 +8,7 @@
 
 ## 下载
 
-**[下载最新版 EXE](https://github.com/Taimai07/big-fat-fish-desktop-pet/releases/latest/download/%E5%A4%A7%E8%82%A5%E9%B1%BC%E6%A1%8C%E5%AE%A0.exe)**
+**[下载最新版](https://github.com/Taimai07/big-fat-fish-desktop-pet/releases/latest)**
 
 下载后直接双击，不用安装，也不用另外下载图片。支持 Windows 10 / 11。
 

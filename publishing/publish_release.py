@@ -73,13 +73,21 @@ def main():
                                    'body': notes, 'draft': True, 'prerelease': False}, 'POST')
     assets = {item['name']: item for item in release['assets']}
     verified = []
-    for path in (executable, checksum):
+    for path, remote_name, label in ((executable, 'BigFatFish.exe', executable.name),
+                                     (checksum, 'SHA256SUMS.txt', 'SHA256')):
         expected = hashlib.sha256(path.read_bytes()).hexdigest()
-        asset = assets.get(path.name)
+        asset = assets.get(remote_name)
+        # GitHub sanitized the first all-Chinese filename to default.exe. Repair only
+        # that known metadata case, and only after confirming the exact original bytes.
+        if asset is None and remote_name == 'BigFatFish.exe' and 'default.exe' in assets:
+            legacy = assets['default.exe']
+            if legacy.get('digest') != 'sha256:' + expected or legacy['size'] != path.stat().st_size:
+                raise ValueError('Legacy asset differs; metadata repair refused.')
+            asset = api('/releases/assets/' + str(legacy['id']), {'name': remote_name, 'label': label}, 'PATCH')
         if asset is None:
             if not release['draft']:
                 raise ValueError('Published versions are immutable; missing asset requires a new version.')
-            asset = request('https://uploads.github.com/repos/' + REPOSITORY + '/releases/' + str(release['id']) + '/assets?name=' + quote(path.name),
+            asset = request('https://uploads.github.com/repos/' + REPOSITORY + '/releases/' + str(release['id']) + '/assets?name=' + quote(remote_name) + '&label=' + quote(label),
                             path.read_bytes(), 'POST', kind='application/octet-stream')
         if asset['size'] != path.stat().st_size or asset.get('state') != 'uploaded':
             raise ValueError('Uploaded asset metadata does not match.')
@@ -91,10 +99,14 @@ def main():
             downloaded = request(asset['url'], accept='application/octet-stream')
             if hashlib.sha256(downloaded).hexdigest() != expected:
                 raise ValueError('Existing release bytes differ; never overwrite a version.')
-        verified.append((asset, expected))
+        verified.append((remote_name, expected))
     if release['draft']:
         release = api('/releases/' + str(release['id']), {'draft': False, 'make_latest': 'true'}, 'PATCH')
-    for asset, expected in verified:
+    # Publishing replaces temporary untagged draft URLs with the final versioned URLs.
+    release = api('/releases/' + str(release['id']))
+    published_assets = {item['name']: item for item in release['assets']}
+    for name, expected in verified:
+        asset = published_assets[name]
         # No credential is sent when verifying the public download.
         req = Request(asset['browser_download_url'], headers={'User-Agent': 'BigFatFish-Release-Verification'})
         with opener.open(req, timeout=60) as response:
