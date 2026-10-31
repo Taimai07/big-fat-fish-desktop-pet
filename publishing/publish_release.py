@@ -1,4 +1,4 @@
-"""Publish an immutable, versioned release from the already tested Windows executable."""
+"""Publish an immutable, versioned release from the tested CI build."""
 import hashlib
 import json
 import os
@@ -27,8 +27,8 @@ def inputs():
     if not match:
         raise ValueError('Expected a three-part release version with zero revision.')
     version = '.'.join(match.groups())
-    executable = ROOT / 'downloads' / '\u5927\u80a5\u9c7c\u684c\u5ba0.exe'
-    checksum = ROOT / 'downloads/SHA256SUMS.txt'
+    executable = ROOT / 'release/BigFatFish.exe'
+    checksum = ROOT / 'release/SHA256SUMS.txt'
     digest = hashlib.sha256(executable.read_bytes()).hexdigest()
     if checksum.read_text(encoding='utf-8').strip() != digest + '  ' + executable.name:
         raise ValueError('Executable checksum mismatch; publication stopped.')
@@ -49,6 +49,15 @@ def main():
     if os.environ.get('GITHUB_REF_TYPE') == 'tag' and os.environ.get('GITHUB_REF_NAME') != tag:
         raise ValueError('Pushed tag and executable version differ.')
     token = os.environ['GH_TOKEN']
+    commit = os.environ['GITHUB_SHA']
+    if not re.fullmatch(r'[0-9a-f]{40}', commit):
+        raise ValueError('Expected an exact source commit.')
+    run_id = os.environ['GITHUB_RUN_ID']
+    if not run_id.isdigit():
+        raise ValueError('Expected a workflow run ID.')
+    notes += ('\n\nBuild: GitHub Actions windows-latest; Windows .NET Framework csc. '
+              'Unsigned executable.\n\nSource: https://github.com/' + REPOSITORY + '/commit/' + commit +
+              '\n\nBuild log: https://github.com/' + REPOSITORY + '/actions/runs/' + run_id + '\n')
     opener = build_opener(SafeRedirects())
 
     def request(url, data=None, method=None, accept='application/vnd.github+json', kind='application/json'):
@@ -77,13 +86,6 @@ def main():
                                      (checksum, 'SHA256SUMS.txt', 'SHA256')):
         expected = hashlib.sha256(path.read_bytes()).hexdigest()
         asset = assets.get(remote_name)
-        # GitHub sanitized the first all-Chinese filename to default.exe. Repair only
-        # that known metadata case, and only after confirming the exact original bytes.
-        if asset is None and remote_name == 'BigFatFish.exe' and 'default.exe' in assets:
-            legacy = assets['default.exe']
-            if legacy.get('digest') != 'sha256:' + expected or legacy['size'] != path.stat().st_size:
-                raise ValueError('Legacy asset differs; metadata repair refused.')
-            asset = api('/releases/assets/' + str(legacy['id']), {'name': remote_name, 'label': label}, 'PATCH')
         if asset is None:
             if not release['draft']:
                 raise ValueError('Published versions are immutable; missing asset requires a new version.')

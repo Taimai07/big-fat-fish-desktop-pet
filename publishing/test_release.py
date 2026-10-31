@@ -3,14 +3,17 @@ import hashlib
 import io
 import json
 import os
+from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 
 import publish_release as publisher
+import prepare_release
 
 
 class FakeGitHub:
-    def __init__(self, existing=False, collision=False, legacy=False):
+    def __init__(self, existing=False, collision=False):
         self.existing = existing
         self.collision = collision
         self.calls = []
@@ -20,12 +23,9 @@ class FakeGitHub:
         self.contents = {'BigFatFish.exe': executable.read_bytes(), 'SHA256SUMS.txt': checksum.read_bytes()}
         if existing:
             for name, data in self.contents.items():
-                self.assets.append(self.asset(name, data, 'v0.7.1'))
+                self.assets.append(self.asset(name, data, 'v0.7.2'))
             if collision:
                 self.assets[0]['digest'] = 'sha256:' + '0' * 64
-            if legacy:
-                self.assets[0]['name'] = 'default.exe'
-                self.assets[0]['browser_download_url'] = self.assets[0]['browser_download_url'].replace('BigFatFish.exe', 'default.exe')
 
     def asset(self, name, data, tag):
         from urllib.parse import quote
@@ -34,7 +34,7 @@ class FakeGitHub:
                 'browser_download_url': 'https://github.com/test/releases/download/' + tag + '/' + quote(name)}
 
     def release(self, draft):
-        return {'id': 123, 'draft': draft, 'assets': self.assets, 'html_url': 'https://github.com/test/releases/tag/v0.7.1'}
+        return {'id': 123, 'draft': draft, 'assets': self.assets, 'html_url': 'https://github.com/test/releases/tag/v0.7.2'}
 
     def open(self, request, timeout):
         from urllib.error import HTTPError
@@ -54,13 +54,9 @@ class FakeGitHub:
             self.assets.append(result)
         elif method == 'GET' and url.endswith('/releases/123'):
             result = self.release(self.draft)
-        elif method == 'PATCH' and '/releases/assets/' in url:
-            metadata = json.loads(request.data)
-            self.assets[0] = dict(self.assets[0], name=metadata['name'], browser_download_url=self.assets[0]['browser_download_url'].replace('default.exe', metadata['name']))
-            result = self.assets[0]
         elif method == 'PATCH':
             self.draft = False
-            self.assets = [dict(asset, browser_download_url=asset['browser_download_url'].replace('untagged-draft', 'v0.7.1')) for asset in self.assets]
+            self.assets = [dict(asset, browser_download_url=asset['browser_download_url'].replace('untagged-draft', 'v0.7.2')) for asset in self.assets]
             result = self.release(False)
         else:
             if 'untagged-draft' in url:
@@ -70,9 +66,24 @@ class FakeGitHub:
 
 
 class ReleaseContractTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        (self.root / 'src').mkdir()
+        (self.root / 'dist').mkdir()
+        (self.root / 'src/Runtime.cs').write_text('[assembly: AssemblyFileVersion("0.7.2.0")]', encoding='utf-8')
+        (self.root / 'RELEASE_NOTES.md').write_text('Version 0.7.2\nFixture notes', encoding='utf-8')
+        (self.root / 'dist' / '\u5927\u80a5\u9c7c\u684c\u5ba0.exe').write_bytes(b'controlled build fixture')
+        with contextlib.redirect_stdout(io.StringIO()):
+            prepare_release.prepare(self.root)
+        root_patch = patch.object(publisher, 'ROOT', self.root)
+        root_patch.start()
+        self.addCleanup(root_patch.stop)
+
     def run_publisher(self, fake):
         with patch.dict(os.environ, {'GITHUB_ACTIONS': 'true', 'GITHUB_REPOSITORY': publisher.REPOSITORY,
-                                     'GITHUB_SHA': '1' * 40, 'GH_TOKEN': 'local-fixture', 'GITHUB_REF_TYPE': 'branch'}), \
+                                     'GITHUB_SHA': '1' * 40, 'GITHUB_RUN_ID': '1234', 'GH_TOKEN': 'local-fixture', 'GITHUB_REF_TYPE': 'branch'}), \
                 patch.object(publisher, 'build_opener', return_value=fake), \
                 patch.object(publisher.sys, 'argv', ['publish_release.py']), contextlib.redirect_stdout(io.StringIO()):
             publisher.main()
@@ -81,7 +92,7 @@ class ReleaseContractTests(unittest.TestCase):
         fake = FakeGitHub()
         self.run_publisher(fake)
         self.assertEqual(sum(method == 'POST' and '/assets?' in url for method, url in fake.calls), 2)
-        self.assertTrue(any(method == 'GET' and '/download/v0.7.1/' in url for method, url in fake.calls))
+        self.assertTrue(any(method == 'GET' and '/download/v0.7.2/' in url for method, url in fake.calls))
 
     def test_existing_identical_version_is_read_only(self):
         fake = FakeGitHub(existing=True)
@@ -94,11 +105,23 @@ class ReleaseContractTests(unittest.TestCase):
             self.run_publisher(fake)
         self.assertTrue(all(method == 'GET' for method, _ in fake.calls))
 
-    def test_sanitized_filename_is_repaired_without_uploading_new_bytes(self):
-        fake = FakeGitHub(existing=True, legacy=True)
-        self.run_publisher(fake)
-        self.assertEqual(sum(method == 'PATCH' and '/assets/' in url for method, url in fake.calls), 1)
-        self.assertTrue(all(method != 'POST' for method, _ in fake.calls))
+    def test_checksum_names_actual_public_asset(self):
+        _, executable, checksum, _ = publisher.inputs()
+        self.assertEqual(executable.name, 'BigFatFish.exe')
+        self.assertEqual(checksum.read_text(encoding='utf-8').split('  ')[1].strip(), executable.name)
+        self.assertEqual(executable.read_bytes(), b'controlled build fixture')
+
+    def test_correct_digest_with_wrong_filename_is_rejected(self):
+        _, executable, checksum, _ = publisher.inputs()
+        checksum.write_text(hashlib.sha256(executable.read_bytes()).hexdigest() + '  old-name.exe\n', encoding='utf-8')
+        with self.assertRaises(ValueError):
+            publisher.inputs()
+
+    def test_changed_executable_is_rejected_before_publication(self):
+        _, executable, _, _ = publisher.inputs()
+        executable.write_bytes(b'changed bytes')
+        with self.assertRaises(ValueError):
+            publisher.inputs()
 
 
 if __name__ == '__main__':

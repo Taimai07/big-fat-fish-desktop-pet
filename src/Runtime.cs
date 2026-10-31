@@ -12,8 +12,8 @@ using System.Windows.Forms;
 
 [assembly: AssemblyTitle("大肥鱼桌宠")]
 [assembly: AssemblyProduct("大肥鱼桌宠")]
-[assembly: AssemblyVersion("0.7.1.0")]
-[assembly: AssemblyFileVersion("0.7.1.0")]
+[assembly: AssemblyVersion("0.7.2.0")]
+[assembly: AssemblyFileVersion("0.7.2.0")]
 
 namespace DesktopInteraction
 {
@@ -64,9 +64,15 @@ namespace DesktopInteraction
         }
         public void WindowMessage(int message,IntPtr key)
         {
+            if(IsAltKey((Keys)key.ToInt64()))return;
             if((message==0x0104 || message==0x0100) && key.ToInt64()==(long)Keys.F4)return;
             if(message==0x0100 || message==0x0104 || message==0x0201 || message==0x0204 || message==0x0207 ||
                message==0x020B || message==0x020A || message==0x020E)Notify();
+        }
+        public static bool IsAltKey(Keys keyData)
+        {
+            Keys key=keyData & Keys.KeyCode;
+            return key==Keys.Menu || key==Keys.LMenu || key==Keys.RMenu;
         }
     }
     public static class OwnWindowTransitions
@@ -256,7 +262,7 @@ namespace DesktopInteraction
         }
         protected override bool ProcessCmdKey(ref Message msg,Keys keyData)
         {
-            if(keyData==(Keys.Alt|Keys.F4))return base.ProcessCmdKey(ref msg,keyData);
+            if(keyData==(Keys.Alt|Keys.F4) || InputFeedback.IsAltKey(keyData))return base.ProcessCmdKey(ref msg,keyData);
             feedback.Notify();
             if(keyData==Keys.Escape)return true;
             return base.ProcessCmdKey(ref msg,keyData);

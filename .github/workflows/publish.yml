@@ -23,14 +23,25 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - name: Check executable version against source
+      - name: Build and test source on Windows
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          ./build.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Source build failed.' }
+          ./tests/test.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Application tests failed.' }
           $source = Get-Content -Raw -Encoding utf8 'src/Runtime.cs'
           $expected = [regex]::Match($source, 'AssemblyFileVersion\("([0-9.]+)"\)').Groups[1].Value
-          $application = Get-Item -LiteralPath 'downloads/大肥鱼桌宠.exe'
+          $application = Get-Item -LiteralPath 'dist/大肥鱼桌宠.exe'
           if ($application.VersionInfo.FileVersion -ne $expected) { throw 'EXE version and source version differ.' }
+          (Get-Item "$env:WINDIR/Microsoft.NET/Framework64/v4.0.30319/csc.exe").VersionInfo | Format-List FileVersion, ProductVersion
+      - name: Stage CI executable and verify publication contracts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python publishing/prepare_release.py
+          if ($LASTEXITCODE -ne 0) { throw 'Release staging failed.' }
           python publishing/publish_release.py --validate-only
           if ($LASTEXITCODE -ne 0) { throw 'Release inputs failed validation.' }
           python -m unittest discover -s publishing -p 'test_*.py'

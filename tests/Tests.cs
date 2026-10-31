@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Imaging;
@@ -251,12 +251,27 @@ public static class Tests
         Check(plays==3,"keyboard event requests the system error sound");
         sound.WindowMessage(0x0100,new IntPtr((int)Keys.A));
         Check(plays==3,"duplicate or rapid events do not stack sounds");
-        time+=200;sound.WindowMessage(0x0104,new IntPtr((int)Keys.F4));
-        Check(plays==3,"normal Alt+F4 close path adds no sound or interception");
+        foreach(Keys alt in new[]{Keys.Menu,Keys.LMenu,Keys.RMenu})
+        {
+            time+=200;sound.WindowMessage(0x0104,new IntPtr((int)alt));
+            Check(plays==3,"Alt key down stays silent: "+alt);
+            time+=50;sound.WindowMessage(0x0104,new IntPtr((int)Keys.F4));
+            Check(plays==3,"Alt then F4 adds no sound: "+alt);
+            sound.WindowMessage(0x0105,new IntPtr((int)Keys.F4));
+            sound.WindowMessage(0x0105,new IntPtr((int)alt));
+        }
         var frames=new MockSource().CaptureOnceAsync(CancellationToken.None).GetAwaiter().GetResult();
         using(var overlay=new Overlay(frames[0],true,0,()=>{},sound))
         {
             overlay.Show();
+            foreach(Keys alt in new[]{Keys.Menu,Keys.LMenu,Keys.RMenu})
+            {
+                time+=200;
+                var altMessage=Message.Create(overlay.Handle,0x0104,new IntPtr((int)alt),IntPtr.Zero);
+                object[] altCall={altMessage,alt|Keys.Alt};
+                typeof(Overlay).GetMethod("ProcessCmdKey",BindingFlags.Instance|BindingFlags.NonPublic).Invoke(overlay,altCall);
+                Check(plays==3,"command processing leaves Alt silent: "+alt);
+            }
             time+=200;
             var message=Message.Create(overlay.Handle,0,IntPtr.Zero,IntPtr.Zero);
             object[] call={message,Keys.Escape};
